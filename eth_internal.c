@@ -247,33 +247,29 @@ void eth_write(uint32_t addr, uint8_t* buf, uint16_t len, bool blocking) {
 }
 
 bool is_wizchip_busy() {
-  if (prev_eth_cmd_state != eth_cmd_state) {
-    prev_eth_cmd_state = eth_cmd_state;
-    print_eth_cmd_state();
-  }
+  /* if (prev_eth_cmd_state != eth_cmd_state) { */
+  /*   prev_eth_cmd_state = eth_cmd_state; */
+  /*   print_eth_cmd_state(); */
+  /* } */
   if (eth_cmd_state == ETH_IDLE) {
     return false;
   }
-  /* if (dma_channel_is_busy(eth_dma_rx) || dma_channel_is_busy(eth_dma_tx)) { */
-  /*   printf("busy\n"); */
-  /*   return true; */
-  /* } */
-  /* if (eth_cmd_state == ETH_TX_DMA) { */
-  /*   printf("completed tx dma\n"); */
-  /*   eth_deselect(); */
-  /*   printf("shown free before %u\n",eth_read16(ETHS_TX_FSR(0))); */
-  /*   eth_write16(ETHS_TX_WR(0), tx_write_ptr); */
-  /*   printf("read %u %u\n",tx_write_ptr, eth_read16(ETHS_TX_WR(0))); */
-  /*   printf("shown free after %u\n",eth_read16(ETHS_TX_FSR(0))); */
-  /*   eth_write8(ETHS_CR(0), ETH_CR_SEND); */
-  /*   eth_cmd_state = ETH_TX_SEND; */
-  /* } else if (eth_cmd_state == ETH_RX_DMA) { */
-  /*   printf("completed rx dma\n"); */
-  /*   eth_deselect(); */
-  /*   eth_write16(ETHS_RX_RD(0), tx_read_ptr); */
-  /*   eth_write8(ETHS_CR(0), ETH_CR_RECV); */
-  /*   eth_cmd_state = ETH_RX_RECV; */
-  /* } */
+  if (dma_channel_is_busy(eth_dma_rx) || dma_channel_is_busy(eth_dma_tx)) {
+    //printf("busy\n");
+    return true;
+  }
+  if (eth_cmd_state == ETH_TX_DMA) {
+    eth_deselect();
+    eth_write16(ETHS_TX_WR(0), tx_write_ptr);
+    eth_write8(ETHS_CR(0), ETH_CR_SEND);
+    eth_cmd_state = ETH_TX_SEND;
+  } else if (eth_cmd_state == ETH_RX_DMA) {
+    printf("completed rx dma\n");
+    eth_deselect();
+    eth_write16(ETHS_RX_RD(0), tx_read_ptr);
+    eth_write8(ETHS_CR(0), ETH_CR_RECV);
+    eth_cmd_state = ETH_RX_RECV;
+  }
   if (eth_cmd_state == ETH_TX_SEND ||
       eth_cmd_state == ETH_RX_RECV) {
     uint8_t tmp = eth_read8(ETHS_CR(0));
@@ -375,9 +371,10 @@ void eth_write_packet(uint8_t* buf, uint16_t len) {
   /*   printf("%02x ", buf[i]); */
   /* } */
   /* printf("\n"); */
-  eth_write(addr, buf, len, true);
+  eth_write(addr, buf, len, false);
   tx_write_ptr += (len - 3);
-  eth_write16(ETHS_TX_WR(0), tx_write_ptr);
-  eth_write8(ETHS_CR(0), ETH_CR_SEND);
-  eth_cmd_state = ETH_TX_SEND;
+  eth_cmd_state = ETH_TX_DMA;
+  /* eth_write16(ETHS_TX_WR(0), tx_write_ptr); */
+  /* eth_write8(ETHS_CR(0), ETH_CR_SEND); */
+  /* eth_cmd_state = ETH_TX_SEND; */
 }

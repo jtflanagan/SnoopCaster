@@ -26,6 +26,9 @@ static void check_tx() {
 
   //printf("sending packet\n");
   uint32_t tx_size = txe - active_tx_buf;
+  if (tx_size < 500) {
+    return;
+  }
   //printf("tx size:%u\n",tx_size);
   eth_write_packet(active_tx_buf, tx_size);
   //printf("sent packet %d\n", active_tx_buf_flag);
@@ -65,7 +68,7 @@ static void prepare_tx_data() {
   // not implementing non-bus data yet
   //printf("adding bus data\n");
   do {
-    for (int j = 0; j < 8; ++j) {
+    for (int j = 0; j < 1; ++j) {
       uint8_t* rw_flags = txe++;
       uint8_t* seq_flags = txe++;
       uint8_t* data_p = txe;
@@ -87,7 +90,7 @@ static void prepare_tx_data() {
 	prev_address = address;
       }
     }
-    if ((txe - active_tx_buf) < 1460 - 208) { 
+    if ((txe - active_tx_buf) > 1460 - 208) { 
       // not enough room for another bus data chunk on this packet, 
       // set tx_buf_full and break out
       tx_buf_full = true;

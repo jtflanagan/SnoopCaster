@@ -12,7 +12,7 @@
 #include "pico/stdlib.h"
 
 
-#define CONFIG_SYSCLOCK 133
+#define CONFIG_SYSCLOCK 150
 
 static void core1_main() {
   printf("initializing eth\n");
@@ -29,7 +29,8 @@ int main() {
     clock_configure(
         clk_peri,
         0,                                                // No glitchless mux
-        CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS, // System PLL on AUX mux
+        //CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS, // System PLL on AUX mux
+	CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
         CONFIG_SYSCLOCK * 1000 * 1000,                               // Input frequency
         CONFIG_SYSCLOCK * 1000 * 1000                                // Output (must be same as no divider)
     );
@@ -44,7 +45,7 @@ int main() {
     printf("claiming spinlock\n");
     bus_spinlock = spin_lock_claim_unused(true);
     printf("got spinlock %d\n",bus_spinlock);
-    queue_init_with_spinlock(&raw_bus_queue, 256, 64, bus_spinlock);
+    queue_init_with_spinlock(&raw_bus_queue, 32, 512, bus_spinlock);
     printf("initialized bus queue\n");
 
     multicore_launch_core1(core1_main);
