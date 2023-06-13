@@ -12,7 +12,7 @@
 #include "pico/stdlib.h"
 
 
-#define CONFIG_SYSCLOCK 150
+#define CONFIG_SYSCLOCK 126
 
 static void core1_main() {
   printf("initializing eth\n");

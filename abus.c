@@ -97,14 +97,14 @@ void __time_critical_func(abus_loop)() {
   uint16_t address = 0;
   uint32_t vals[64];
   while(1) {
-    sleep_us(3);
+    sleep_us(8);
     for (int i = 0; i < 8; ++i) {
       vals[i] = address;
       vals[i] <<= 10;
       vals[i] |= data;
       ++data;
       ++address;
-      if ( (i % 8) == 0) {
+      if ( (i % 2) == 0) {
 	++address;
       }
     }
