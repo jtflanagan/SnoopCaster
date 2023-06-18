@@ -95,17 +95,17 @@ void __time_critical_func(abus_loop)() {
   uint32_t fails = 0;
   uint8_t data = 0;
   uint16_t address = 0;
-  uint32_t vals[64];
+  uint32_t vals[32];
   while(1) {
-    sleep_us(8);
-    for (int i = 0; i < 8; ++i) {
+    sleep_us(32);
+    for (int i = 0; i < 32; ++i) {
       vals[i] = address;
       vals[i] <<= 10;
       vals[i] |= data;
       ++data;
       ++address;
       if ( (i % 2) == 0) {
-	++address;
+  	++address;
       }
     }
     bool ret = queue_try_add(&raw_bus_queue, &vals);
@@ -113,7 +113,7 @@ void __time_critical_func(abus_loop)() {
       ++fails;
     }
     ++count;
-    if (count % (1024*256) == 0) {
+    if (count % (1024*128) == 0) {
       printf("writes: %d: %d\n",count, fails);
       count = 0;
       fails = 0;

@@ -26,6 +26,23 @@ void eth_read_packet(uint8_t* buf, uint16_t len);
 void eth_write_packet(uint8_t* buf, uint16_t len);
 
 bool is_wizchip_busy();
+bool tx_ring_full();
+
+
+struct ring_entry {
+  uint16_t begin;
+  uint16_t len;
+};
+
+extern ring_entry tx_ring[8];
+extern uint32_t tx_end = 0;
+extern uint32_t tx_begin = 0;
+extern uint8_t msg_buf[1475];
+extern uint8_t rx_header_buf[8];
+extern bool have_pending_response_packet = false;
+extern bool tx_idle = true;
+
+
 
 #define _W5500_IO_BASE_ 0x00000000
 

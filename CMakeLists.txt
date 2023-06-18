@@ -42,7 +42,6 @@ target_sources(snoopcaster PUBLIC
     abus.c
     buffers.c
     eth.c
-    eth_internal.c
 )
 target_include_directories(snoopcaster PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snoopcaster PUBLIC

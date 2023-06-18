@@ -45,7 +45,7 @@ int main() {
     printf("claiming spinlock\n");
     bus_spinlock = spin_lock_claim_unused(true);
     printf("got spinlock %d\n",bus_spinlock);
-    queue_init_with_spinlock(&raw_bus_queue, 32, 512, bus_spinlock);
+    queue_init_with_spinlock(&raw_bus_queue, 128, 512, bus_spinlock);
     printf("initialized bus queue\n");
 
     multicore_launch_core1(core1_main);
