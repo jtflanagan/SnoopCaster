@@ -104,7 +104,7 @@ void __time_critical_func(abus_loop)() {
       vals[i] |= data;
       ++data;
       ++address;
-      if ( (i % 2) == 0) {
+      if ( (i % 4) == 0) {
   	++address;
       }
     }

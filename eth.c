@@ -155,6 +155,7 @@ void load_tx_bytes() {
 }
 
 void process_echo() {
+  printf("echo %d\n",rx_len);
   for (uint16_t i = rxe - rx_buf; i < rx_len; ++i) {
     *mbe++ = *rxe++;
   }
@@ -174,12 +175,14 @@ void process_rx() {
   *mbe++ = (last_rx_seqno >> 16) & 0xff;
   *mbe++ = (last_rx_seqno >> 24) & 0xff;
   *mbe++ = cmd_type;
+  printf("process_rx %d %d\n",last_rx_seqno, cmd_type);
   switch (cmd_type) {
   case 1:
     process_echo(); break;
   default:
     printf("unrecognized cmd type %d\n",cmd_type);
   }
+  eth_write8(ETHS_RX_RD(0), rx_ptr);
   rx_len = 0;
 }
 
@@ -223,30 +226,33 @@ void send_tx_packet() {
 }
 
 void start_rx_packet() {
-  dma_reading = true;
+  printf("start_rx_packet %d\n", rx_pending_bytes);
+  //dma_reading = true;
   uint32_t addr = ((uint32_t)rx_ptr << 8) + (WIZCHIP_RXBUF_BLOCK(0) << 3);
   eth_read(addr, rx_header_buf, 8, true);
   rx_ptr += 8;
   rx_pending_bytes -= 8;
+  eth_write16(ETHS_RX_RD(0),rx_ptr);
   // hit read, and wait for command complete
   eth_write8(ETHS_CR(0), ETH_CR_RECV);
   while(eth_read8(ETHS_CR(0)));
   rx_len = rx_header_buf[6];
   rx_len = (rx_len << 8) + rx_header_buf[7];
   addr = ((uint32_t)rx_ptr << 8) + (WIZCHIP_RXBUF_BLOCK(0) << 3);
-  eth_read(addr, rx_buf, rx_len, false);
+  eth_read(addr, rx_buf, rx_len, true);
   rx_ptr += rx_len;
   rx_pending_bytes -= rx_len;
+  eth_write16(ETHS_RX_RD(0),rx_ptr);
 }
 
 bool check_interrupts() {
-  if (rx_pending_bytes > 0 && !rx_len) {
-    // we have pending bytes from a previous RX and we have responded
-    // to the last one.  Start another RX read (and return true because
-    // this will start DMA and we're done on this pass)
-    start_rx_packet();
-    return true;
-  }
+  /* if (rx_pending_bytes > 0 && !rx_len) { */
+  /*   // we have pending bytes from a previous RX and we have responded */
+  /*   // to the last one.  Start another RX read (and return true because */
+  /*   // this will start DMA and we're done on this pass) */
+  /*   start_rx_packet(); */
+  /*   return true; */
+  /* } */
   if (gpio_get(ETH_PIN_INT) == 1) {
     // no interrupt, can check for other tasks
     //printf("no interrupt\n");
@@ -260,13 +266,11 @@ bool check_interrupts() {
     while(1);
   }
   if (tmp & ETH_IR_RECV) {
-    //printf("IR_RECV\n");
+    printf("IR_RECV\n");
     // module wants to tell us about recv bytes available
     eth_write8(ETHS_IR(0), ETH_IR_RECV);
-    uint16_t new_rptr = eth_read16(ETHS_RX_RD(0));
-    rx_pending_bytes = new_rptr - rx_ptr;
-    // the actual RX happens on the next go-around (or later, if we haven't
-    // finished sending the last response packet yet)
+    rx_pending_bytes = eth_read16(ETHS_RX_RSR(0));
+    start_rx_packet();
   }
   if (tmp & ETH_IR_SENDOK) {
     //printf("IR_SENDOK\n");
@@ -463,18 +467,18 @@ void eth_loop() {
     // if there is active dma, nothing else can happen besides trying to pull
     // some bus data
     if (is_dma_busy()) {
-      uint queue_size = queue_get_level_unsafe(&raw_bus_queue);
-      uint count = queue_size;
-      if (count > 8 - bus_count) {
-	count = 8 - bus_count;
+      /* uint queue_size = queue_get_level_unsafe(&raw_bus_queue); */
+      /* uint count = queue_size; */
+      /* if (count > 8 - bus_count) { */
+      /* 	count = 8 - bus_count; */
+      /* } */
+      /* for (int i = 0; i < count; ++i) { */
+      bool have_bus_data = 
+	queue_try_remove(&raw_bus_queue, &vals + bus_count * 32);
+      if (have_bus_data) {
+	++bus_count;
       }
-      for (int i = 0; i < count; ++i) {
-	bool have_bus_data = 
-	  queue_try_remove(&raw_bus_queue, &vals + bus_count * 32);
-	if (have_bus_data) {
-	  ++bus_count;
-	}
-      }
+      /* } */
       //printf("dma_busy\n");
       continue;
     }
@@ -484,7 +488,7 @@ void eth_loop() {
       continue;
     }
     if (rx_len) {
-      //printf("rx_len\n");
+      printf("rx_len %d\n", rx_len);
       if (tx_ring[ring_end].length > 0) {
 	if (tx_ring_full()) {
 	  // if we have a pending response but tx ring is full, we can't do
@@ -517,11 +521,11 @@ void eth_loop() {
       }
       // otherwise there's nothing to send, check to add
     }
-    if (!bus_count) {
+    if (bus_count < 4) {
       uint queue_size = queue_get_level_unsafe(&raw_bus_queue);
       uint count = queue_size;
-      if (count > 8 - bus_count) {
-	count = 8 - bus_count;
+      if (count > 4 - bus_count) {
+	count = 4 - bus_count;
       }
       for (int i = 0; i < count; ++i) {
 	//printf("try %d %d %d\n",i, count, queue_size);
@@ -533,6 +537,9 @@ void eth_loop() {
 	  break;
 	}
       } 
+    }
+    if (bus_count == 0) {
+      continue;
     }
     //printf("done checking\n");
     // if the ring is completely full (full ring and last packet
