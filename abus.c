@@ -82,7 +82,6 @@ static void abus_main_setup(PIO pio, uint sm) {
     }
 }
 
-
 void abus_init() {
     abus_device_read_setup(CONFIG_ABUS_PIO, ABUS_DEVICE_READ_SM);
     abus_main_setup(CONFIG_ABUS_PIO, ABUS_MAIN_SM);
@@ -90,37 +89,140 @@ void abus_init() {
     pio_enable_sm_mask_in_sync(CONFIG_ABUS_PIO, (1 << ABUS_MAIN_SM) | (1 << ABUS_DEVICE_READ_SM));
 }
 
-void __time_critical_func(abus_loop)() {
+static inline void __time_critical_func(synth_bus)() {
   uint32_t count = 0;
   uint32_t fails = 0;
   uint8_t data = 0;
+  uint16_t prev_address = 0;
   uint16_t address = 0;
-  uint32_t vals[32];
+  uint8_t rw = 0;
+  uint16_t buf_index = 0;
+  uint32_t next_tx_seqno = 0;
+  uint32_t last_count = 0;
+  uint32_t packets = 0;
   while(1) {
-    sleep_us(32);
-    for (int i = 0; i < 32; ++i) {
-      vals[i] = address;
-      vals[i] <<= 10;
-      vals[i] |= data;
-      ++data;
-      ++address;
-      if ( (i % 4) == 0) {
-  	++address;
-      }
+    if (count) {
+      uint32_t sleep_amount = count - last_count;
+      //sleep_amount -= 40;
+      sleep_us(sleep_amount);
     }
-    bool ret = queue_try_add(&raw_bus_queue, &vals);
+    last_count = count;
+    buf_index = (buf_index + 1) % 8;
+    uint8_t* b = bus_buffers[buf_index];
+    uint8_t* p = b + 3;
+    ++next_tx_seqno;
+    *p++ = next_tx_seqno & 0xff;
+    *p++ = (next_tx_seqno >> 8) & 0xff;
+    *p++ = (next_tx_seqno >> 16) & 0xff;
+    *p++ = (next_tx_seqno >> 24) & 0xff;
+    *p++ = 0; // bus data packet type
+    while (p - b < 1475 - 26) {
+      uint8_t* rw_flags = p++;
+      uint8_t* seq_flags = p++;
+      uint8_t* data_p = p;
+      p += 8;
+      *rw_flags = 0;
+      *seq_flags = 0;
+      for (uint8_t i = 0; i < 8; ++i) {
+	++data;
+	++address;
+	if ( (i % 4) == 0) {
+	  ++address;
+	}
+	rw = !rw;
+	*rw_flags |= rw << i;
+	*data_p++ = data;
+	if (address != prev_address + 1) {
+	  *seq_flags |= 1 << i;
+	  uint8_t address_lo = address & 0xff;
+	  *p++ = address_lo;
+	  uint8_t address_hi = (address >> 8) & 0xff;
+	  *p++ = address_hi;
+	}
+	prev_address = address;
+      }
+      count += 8;
+    }
+    uint32_t val = (uint32_t)buf_index << 16;
+    val += (p - b);
+    bool ret = queue_try_add(&raw_bus_queue, &val);
     if (!ret) {
       ++fails;
     }
-    ++count;
-    if (count % (1024*128) == 0) {
-      printf("writes: %d: %d\n",count, fails);
-      count = 0;
+    ++packets;
+    if (packets % (4096) == 0) {
+      printf("writes: %d: %d\n",packets, fails);
       fails = 0;
     }
   }
-    
-    //uint32_t value = pio_sm_get_blocking(CONFIG_ABUS_PIO, ABUS_MAIN_SM);
-    
-    //queue_try_add(&raw_bus_queue, &value);
+}
+
+static uint16_t buf_index = 0;
+static uint32_t next_tx_seqno = 0;
+static uint8_t* buf;
+static uint8_t* p;
+static uint8_t* rw_flags;
+static uint8_t* seq_flags;
+static uint8_t* data_p;
+
+static inline void __time_critical_func(begin_packet)() {
+  buf = bus_buffers[buf_index];
+  p = buf + 3;
+  ++next_tx_seqno;
+  *p++ = next_tx_seqno & 0xff;
+  *p++ = (next_tx_seqno >> 8) & 0xff;
+  *p++ = (next_tx_seqno >> 16) & 0xff;
+  *p++ = (next_tx_seqno >> 24) & 0xff;
+  *p++ = 0; // bus data packet type
+}
+
+static inline void __time_critical_func(begin_batch)() {
+  rw_flags = p++;
+  seq_flags = p++;
+  data_p = p;
+  p += 8;
+  *rw_flags = 0;
+  *seq_flags = 0;
+}
+
+
+void __time_critical_func(abus_loop)() {
+
+  // run the synthesized bus instead
+  //synth_bus();
+
+  uint16_t prev_address = 0;
+  uint8_t batch_index = 0;
+  begin_packet();
+  begin_batch();
+  while(1) {
+    uint32_t value = pio_sm_get_blocking(CONFIG_ABUS_PIO, ABUS_MAIN_SM);
+    uint16_t address = value >> 10;
+    uint8_t rw = (value >> 9) & 0x1;
+    uint8_t data = value & 0xff;
+    //printf("%d %d %d\n",address, rw, data);
+    *rw_flags |= rw << batch_index;
+    *data_p++ = data;
+    if (address != prev_address + 1) {
+      *seq_flags |= 1 << batch_index;
+      uint8_t address_lo = address & 0xff;
+      *p++ = address_lo;
+      uint8_t address_hi = (address >> 8) & 0xff;
+      *p++ = address_hi;
+    }
+    prev_address = address;
+    ++batch_index;
+    if (batch_index == 8) {
+      uint16_t buf_size = p - buf;
+      if (buf_size > 1400) {
+	uint32_t value = (uint32_t)buf_index << 16;
+	value += buf_size;
+	queue_try_add(&raw_bus_queue, &value);
+	buf_index = (buf_index + 1) % 8;
+	begin_packet();
+      }
+      begin_batch();
+      batch_index = 0;
+    }
+  }
 }

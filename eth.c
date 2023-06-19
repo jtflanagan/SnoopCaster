@@ -16,41 +16,28 @@ static uint8_t eth_sipr[7] = {0, 0, 0, 192, 168, 1, 253};
 static uint8_t eth_gar[7] = {0, 0, 0, 192, 168, 1, 1};
 static uint8_t eth_subr[7] = {0, 0, 0, 255, 255, 255, 0};
 
-struct ring_entry {
-  uint16_t begin;
-  uint16_t length;
-};
-
-static struct ring_entry tx_ring[8];
-static uint32_t ring_end = 0;
-static uint32_t ring_begin = 0;
 static uint8_t msg_buf[1475];
 static uint8_t* mbe;
 static uint8_t rx_header_buf[8];
 static uint8_t rx_buf[1475];
 static uint8_t* rxe;
-static bool dma_writing = false;
-static bool dma_reading = false;
 static bool tx_idle = true;
 static uint16_t rx_pending_bytes = 0;
 static uint16_t rx_len = 0;
 static uint16_t tx_ptr = 0;
+static uint16_t tx_bytes = 0;
 static uint16_t rx_ptr = 0;
-static uint32_t bus_count = 0;
+//static uint32_t bus_count = 0;
 //static uint64_t dma_begin_time;
 
-static uint32_t vals[256];
-static uint32_t prev_address = 0;
+//static uint32_t vals[8];
+//static uint32_t prev_address = 0;
 static uint8_t host_ip[7] = {0, 0, 0, 192, 168, 1, 107};
-static uint16_t host_port = 5000;
+static uint16_t host_port = 8080;
 static uint64_t next_connect_attempt = 0;
-static uint16_t listen_port = 5000;
-static uint32_t next_tx_seqno = 0;
+static uint16_t listen_port = 8080;
+//static uint32_t next_tx_seqno = 0;
 static uint32_t last_rx_seqno = 0;
-
-bool tx_ring_full() {
-  return (((ring_end + 1) % 8) == ring_begin);
-}
 
 static inline void eth_select(void) {
   gpio_put(ETH_PIN_CS, 0);
@@ -98,8 +85,7 @@ static inline void spi_write(uint8_t* buf, uint16_t len) {
   dma_start_channel_mask((1u << eth_dma_tx) | (1u << eth_dma_rx));
 }
 
-void eth_read(uint32_t addr, uint8_t* buf, uint16_t len, 
-	      bool blocking) {
+void eth_read(uint32_t addr, uint8_t* buf, uint16_t len) {
   uint8_t spi_data[3];
 
   critical_section_enter_blocking(&eth_cri_sec);
@@ -114,16 +100,14 @@ void eth_read(uint32_t addr, uint8_t* buf, uint16_t len,
   dma_channel_wait_for_finish_blocking(eth_dma_rx);
   spi_read(buf, len);
 
-  if (blocking) {
-    dma_channel_wait_for_finish_blocking(eth_dma_rx);
-    eth_deselect();
-  }
+  dma_channel_wait_for_finish_blocking(eth_dma_rx);
+  eth_deselect();
   critical_section_exit(&eth_cri_sec);
 }
 
 // this should be called with the first 3 bytes of buf reserved to put the
 // address, in order to do the write as a single burst operation
-void eth_write(uint32_t addr, uint8_t* buf, uint16_t len, bool blocking) {
+void eth_write(uint32_t addr, uint8_t* buf, uint16_t len) {
 
   critical_section_enter_blocking(&eth_cri_sec);
   eth_select();
@@ -135,31 +119,30 @@ void eth_write(uint32_t addr, uint8_t* buf, uint16_t len, bool blocking) {
   buf[2] = (addr & 0x000000ff);
   spi_write(buf, len);
 
-  if (blocking) {
-    dma_channel_wait_for_finish_blocking(eth_dma_rx);
-    eth_deselect();
-  }
+  dma_channel_wait_for_finish_blocking(eth_dma_rx);
+  eth_deselect();
   critical_section_exit(&eth_cri_sec);
 }
 
-void load_tx_bytes() {
-  dma_writing = true;
-  uint16_t len = mbe - msg_buf;
-  tx_ring[ring_end].length += len - 3;
+void load_tx_bytes(uint8_t* buf, uint16_t len) {
+  uint16_t payload_len = len - 3;
   /* printf("load_tx_bytes %d %d %d %d %d\n", */
   /* 	 len, ring_end, tx_ring[ring_end].begin, tx_ring[ring_end].length, tx_ptr); */
   uint32_t addr = ((uint32_t)tx_ptr << 8) + (WIZCHIP_TXBUF_BLOCK(0) << 3);
   //dma_begin_time = time_us_64();
-  eth_write(addr, msg_buf, len, true);
-  tx_ptr += len - 3;
+  //printf("begin tx\n");
+  eth_write(addr, buf, len);
+  tx_ptr += payload_len;
+  tx_bytes += payload_len;
+  //printf("end tx\n");
 }
 
 void process_echo() {
-  printf("echo %d\n",rx_len);
+  //printf("echo %d\n",rx_len);
   for (uint16_t i = rxe - rx_buf; i < rx_len; ++i) {
     *mbe++ = *rxe++;
   }
-  load_tx_bytes();
+  load_tx_bytes(msg_buf, mbe - msg_buf);
 }
 
 void process_rx() {
@@ -175,84 +158,77 @@ void process_rx() {
   *mbe++ = (last_rx_seqno >> 16) & 0xff;
   *mbe++ = (last_rx_seqno >> 24) & 0xff;
   *mbe++ = cmd_type;
-  printf("process_rx %d %d\n",last_rx_seqno, cmd_type);
+  //printf("process_rx %d %d\n",last_rx_seqno, cmd_type);
   switch (cmd_type) {
   case 1:
     process_echo(); break;
   default:
     printf("unrecognized cmd type %d\n",cmd_type);
   }
-  eth_write8(ETHS_RX_RD(0), rx_ptr);
+  /* rx_ptr += rx_len; */
+  /* eth_write8(ETHS_RX_RD(0), rx_ptr); */
   rx_len = 0;
 }
 
-bool is_dma_busy() {
-  if (dma_writing || dma_reading) {
-    if (dma_channel_is_busy(eth_dma_rx) || dma_channel_is_busy(eth_dma_tx)) {
-      //printf("busy\n");
-      return true;
-    }
-    // deselect to end the operation
-    eth_deselect();
-    if (dma_reading) {
-      // read complete
-      dma_reading = false;
-    } else {
-      // write complete
-      dma_writing = false;
-    }
-  }
-  return false;
-}
-
-void terminate_current_packet() {
-  //printf("terminating packet\n");
-  uint16_t cur_packet_end =
-    tx_ring[ring_end].begin + tx_ring[ring_end].length;
-  ring_end = (ring_end + 1) % 8;
-  tx_ring[ring_end].begin = cur_packet_end;
-  tx_ring[ring_end].length = 0;
-}
+/* void terminate_current_packet() { */
+/*   //printf("terminating packet\n"); */
+/*   uint16_t cur_packet_end = */
+/*     tx_ring[ring_end].begin + tx_ring[ring_end].length; */
+/*   ring_end = (ring_end + 1) % 8; */
+/*   tx_ring[ring_end].begin = cur_packet_end; */
+/*   tx_ring[ring_end].length = 0; */
+/* } */
 
 void send_tx_packet() {
   //printf("sending tx packet %d\n", ring_begin);
-  uint16_t pkt_end = tx_ring[ring_begin].begin + tx_ring[ring_begin].length;
   // adjust tx write pointer, hit send, and wait for command complete
-  eth_write16(ETHS_TX_WR(0), pkt_end);
+  eth_write16(ETHS_TX_WR(0), tx_ptr);
   eth_write8(ETHS_CR(0), ETH_CR_SEND);
-  while (eth_read8(ETHS_CR(0)));
+  //while (eth_read8(ETHS_CR(0)));
+  tx_bytes = 0;
   tx_idle = false;
-  ring_begin = (ring_begin + 1) % 8;
 }
 
-void start_rx_packet() {
-  printf("start_rx_packet %d\n", rx_pending_bytes);
-  //dma_reading = true;
+void read_rx_packet() {
+  while(eth_read8(ETHS_CR(0)));
+  //printf("start_rx_packet %d %d\n", rx_ptr, rx_pending_bytes);
   uint32_t addr = ((uint32_t)rx_ptr << 8) + (WIZCHIP_RXBUF_BLOCK(0) << 3);
-  eth_read(addr, rx_header_buf, 8, true);
+  //printf("1\n");
+  eth_read(addr, rx_header_buf, 8);
   rx_ptr += 8;
   rx_pending_bytes -= 8;
+  //printf("2\n");
   eth_write16(ETHS_RX_RD(0),rx_ptr);
   // hit read, and wait for command complete
-  eth_write8(ETHS_CR(0), ETH_CR_RECV);
-  while(eth_read8(ETHS_CR(0)));
+  //printf("3\n");
+  //eth_write8(ETHS_CR(0), ETH_CR_RECV);
+  //printf("4\n");
+  //while(eth_read8(ETHS_CR(0)));
   rx_len = rx_header_buf[6];
   rx_len = (rx_len << 8) + rx_header_buf[7];
   addr = ((uint32_t)rx_ptr << 8) + (WIZCHIP_RXBUF_BLOCK(0) << 3);
-  eth_read(addr, rx_buf, rx_len, true);
+  //printf("5 %d\n",rx_len);
+  eth_read(addr, rx_buf, rx_len);
   rx_ptr += rx_len;
   rx_pending_bytes -= rx_len;
+  //printf("6\n");
   eth_write16(ETHS_RX_RD(0),rx_ptr);
+  //printf("7\n");
+  eth_write8(ETHS_CR(0), ETH_CR_RECV);
+  //printf("8\n");
+  while(eth_read8(ETHS_CR(0)));
+  //printf("9\n");
+  //printf("finish rx packet %d %d\n",rx_ptr, rx_pending_bytes);
 }
 
 bool check_interrupts() {
-  /* if (rx_pending_bytes > 0 && !rx_len) { */
-  /*   // we have pending bytes from a previous RX and we have responded */
-  /*   // to the last one.  Start another RX read (and return true because */
-  /*   // this will start DMA and we're done on this pass) */
-  /*   start_rx_packet(); */
-  /*   return true; */
-  /* } */
+  if (rx_pending_bytes > 0 && !rx_len) {
+    // we have pending bytes from a previous RX and we have responded
+    // to the last one.  Start another RX read (and return true because
+    // this will start DMA and we're done on this pass)
+    read_rx_packet();
+    return true;
+  }
   if (gpio_get(ETH_PIN_INT) == 1) {
     // no interrupt, can check for other tasks
     //printf("no interrupt\n");
@@ -266,11 +242,11 @@ bool check_interrupts() {
     while(1);
   }
   if (tmp & ETH_IR_RECV) {
-    printf("IR_RECV\n");
+    //printf("IR_RECV\n");
     // module wants to tell us about recv bytes available
     eth_write8(ETHS_IR(0), ETH_IR_RECV);
     rx_pending_bytes = eth_read16(ETHS_RX_RSR(0));
-    start_rx_packet();
+    read_rx_packet();
   }
   if (tmp & ETH_IR_SENDOK) {
     //printf("IR_SENDOK\n");
@@ -291,9 +267,9 @@ uint16_t eth_read16(uint32_t reg) {
   uint16_t ret = 0;
   uint16_t check_ret = 0;
   do {
-    eth_read(reg, buf, 2, true);
+    eth_read(reg, buf, 2);
     ret = ((uint16_t)(buf[0] << 8)) + buf[1];
-    eth_read(reg, buf, 2, true);
+    eth_read(reg, buf, 2);
     check_ret = ((uint16_t)(buf[0] << 8)) + buf[1];
   } while (ret != check_ret);
   return ret;
@@ -303,19 +279,19 @@ void eth_write16(uint32_t reg, uint16_t val) {
   uint8_t buf[5];
   buf[3] = (uint8_t)(val >> 8);
   buf[4] = (uint8_t)val;
-  eth_write(reg, buf, 5, true);
+  eth_write(reg, buf, 5);
 }
 
 uint8_t eth_read8(uint32_t reg) {
   uint8_t ret;
-  eth_read(reg, &ret, 1, true);
+  eth_read(reg, &ret, 1);
   return ret;
 }
 
 void eth_write8(uint32_t reg, uint8_t val) {
   uint8_t buf[4];
   buf[3] = val;
-  eth_write(reg, buf, 4, true);
+  eth_write(reg, buf, 4);
 }
 
 static inline void time_loop(const char* buf, uint64_t b) {
@@ -387,10 +363,10 @@ void eth_init() {
     eth_write8(ETHS_RXBUF_SIZE(i),0);
   }
 
-  eth_write(ETH_SUBR, eth_subr, 7, true);
-  eth_write(ETH_SIPR, eth_sipr, 7, true);
-  eth_write(ETH_SHAR, eth_shar, 9, true);
-  eth_write(ETH_GAR, eth_gar, 7, true);
+  eth_write(ETH_SUBR, eth_subr, 7);
+  eth_write(ETH_SIPR, eth_sipr, 7);
+  eth_write(ETH_SHAR, eth_shar, 9);
+  eth_write(ETH_GAR, eth_gar, 7);
 
 
   // initialize interrupts
@@ -408,8 +384,10 @@ void eth_init() {
 
   tx_ptr = eth_read16(ETHS_RX_RD(0));
   rx_ptr = eth_read16(ETHS_TX_WR(0));
-  tx_ring[ring_end].begin = tx_ptr;
-  tx_ring[ring_end].length = 0;
+  uint16_t ignored_bytes = eth_read16(ETHS_RX_RSR(0));
+  rx_ptr += ignored_bytes;
+  eth_write16(ETHS_RX_RD(0),rx_ptr);
+  tx_bytes = 0;
 }
 
 
@@ -437,26 +415,26 @@ void eth_loop() {
       uint8_t port_buf[5];
       port_buf[3] = (listen_port & 0xff00) >> 8;
       port_buf[4] = (listen_port & 0xff);
-      eth_write(ETHS_PORT(0), port_buf, 5, true);
+      eth_write(ETHS_PORT(0), port_buf, 5);
       eth_write8(ETHS_CR(0), ETH_CR_OPEN);
       while (eth_read8(ETHS_CR(0)));
       while (eth_read8(ETHS_SR(0) == ETH_SOCK_CLOSED));	     
-      eth_write(ETHS_DIPR(0), host_ip, 7, true);
+      eth_write(ETHS_DIPR(0), host_ip, 7);
       port_buf[3] = (host_port & 0xff00) >> 8;
       port_buf[4] = (host_port & 0xff);
-      eth_write(ETHS_DPORT(0), port_buf, 5, true);
+      eth_write(ETHS_DPORT(0), port_buf, 5);
       uint8_t buf[32];
-      eth_read(ETH_SHAR, buf, 6, true);
+      eth_read(ETH_SHAR, buf, 6);
       printf("mac %02x %02x %02x %02x %02x %02x\n",
 	     buf[0],buf[1],buf[2],
 	     buf[3],buf[4],buf[5]);
-      eth_read(ETH_SIPR, buf, 4, true);
+      eth_read(ETH_SIPR, buf, 4);
       printf("ip %02x %02x %02x %02x\n",
 	     buf[0],buf[1],buf[2],buf[3]);
-      eth_read(ETH_GAR, buf, 4, true);
+      eth_read(ETH_GAR, buf, 4);
       printf("gate %02x %02x %02x %02x\n",
 	     buf[0],buf[1],buf[2],buf[3]);
-      eth_read(ETH_SUBR, buf, 4, true);
+      eth_read(ETH_SUBR, buf, 4);
       printf("subnet %02x %02x %02x %02x\n",
 	     buf[0],buf[1],buf[2],buf[3]);
       printf("socket created\n");
@@ -464,139 +442,25 @@ void eth_loop() {
     }
   }
   while(1) {
-    // if there is active dma, nothing else can happen besides trying to pull
-    // some bus data
-    if (is_dma_busy()) {
-      /* uint queue_size = queue_get_level_unsafe(&raw_bus_queue); */
-      /* uint count = queue_size; */
-      /* if (count > 8 - bus_count) { */
-      /* 	count = 8 - bus_count; */
-      /* } */
-      /* for (int i = 0; i < count; ++i) { */
-      bool have_bus_data = 
-	queue_try_remove(&raw_bus_queue, &vals + bus_count * 32);
-      if (have_bus_data) {
-	++bus_count;
-      }
-      /* } */
-      //printf("dma_busy\n");
-      continue;
-    }
-    // if we process an interrupt, nothing else can happen
-    if (check_interrupts()) {
-      //printf("interrupt\n");
-      continue;
-    }
-    if (rx_len) {
-      printf("rx_len %d\n", rx_len);
-      if (tx_ring[ring_end].length > 0) {
-	if (tx_ring_full()) {
-	  // if we have a pending response but tx ring is full, we can't do
-	  // anything till there is space
-	  continue;
-	}
-	// terminate the current packet so the response can be next
-	terminate_current_packet();
-      }
-      // there is room in the tx ring for the response, queue it
-      process_rx();
-      continue;
-    }
-    // if tx is idle and there is a ready packet, push it out
-    if (tx_idle) {
-      //printf("tx_idle\n");
-      // if there is more than one packet, push out the next packet
-      if (ring_begin != ring_end) {
-	//printf("ring buffer has multiple packets\n");
+    //printf("loop\n");
+    check_interrupts();
+    if (tx_bytes) {
+      //printf("tx_bytes not zero\n");
+      if (tx_idle) {
+	//printf("sending\n");
 	send_tx_packet();
+	if (rx_len) {
+	  process_rx();
+	}
+      } else {
 	continue;
       }
-      // if there is only one packet and it is not empty, terminate it
-      // and push it out
-      if (tx_ring[ring_end].length > 1472-26*4) {
-	//printf("ring buffer has one packet\n");
-	terminate_current_packet();
-	send_tx_packet();
-	continue;
-      }
-      // otherwise there's nothing to send, check to add
     }
-    if (bus_count < 4) {
-      uint queue_size = queue_get_level_unsafe(&raw_bus_queue);
-      uint count = queue_size;
-      if (count > 4 - bus_count) {
-	count = 4 - bus_count;
-      }
-      for (int i = 0; i < count; ++i) {
-	//printf("try %d %d %d\n",i, count, queue_size);
-	bool have_bus_data = 
-	  queue_try_remove(&raw_bus_queue, &vals + bus_count * 32);
-	if (have_bus_data) {
-	  ++bus_count;
-	} else {
-	  break;
-	}
-      } 
+    uint32_t val;
+    if (queue_try_remove(&raw_bus_queue, &val)) {
+      uint16_t buf_index = (val & 0xffff0000) >> 16;
+      uint16_t len = val & 0x0000ffff;
+      load_tx_bytes(bus_buffers[buf_index],len);
     }
-    if (bus_count == 0) {
-      continue;
-    }
-    //printf("done checking\n");
-    // if the ring is completely full (full ring and last packet
-    // does not have enough room for another chunk), then we have to wait
-    if (tx_ring_full() && tx_ring[ring_end].length > 1472 - 26*bus_count) {
-      printf("ring buffer completely full\n");
-      continue;
-    }
-    mbe = msg_buf + 3;
-    if (tx_ring[ring_end].length == 0) {
-      // packet is empty, need header
-      ++next_tx_seqno;
-      *mbe++ = next_tx_seqno & 0xff;
-      *mbe++ = (next_tx_seqno >> 8) & 0xff;
-      *mbe++ = (next_tx_seqno >> 16) & 0xff;
-      *mbe++ = (next_tx_seqno >> 24) & 0xff;
-      // 0 is packet type of "bus data"
-      *mbe++ = 0;
-    }
-    uint16_t space_left = 1472-tx_ring[ring_end].length;
-    uint32_t k = 0;
-    while (k < bus_count && space_left >= 26*4) {
-      uint8_t* b = mbe;
-      for (uint32_t j = 0; j < 4; ++j) { 
-	uint8_t* rw_flags = mbe++;
-	uint8_t* seq_flags = mbe++;
-	uint8_t* data_p = mbe;
-	mbe += 8;
-	*rw_flags = 0;
-	*seq_flags = 0;
-	for (uint8_t i = 0; i < 8; ++i) {
-	  uint8_t data = vals[j*8+i] & 0xff;
-	  uint8_t rw = (vals[j*8+i] >> 9) & 0x1;
-	  uint8_t address = (vals[j*8+i] >> 10) & 0xffff;
-	  *rw_flags |= rw << i;
-	  *data_p++ = data;
-	  if (address != prev_address + 1) {
-	    *seq_flags |= 1 << i;
-	    uint8_t address_lo = address & 0xff;
-	    *mbe++ = address_lo;
-	    uint8_t address_hi = (address >> 8) & 0xff;
-	    *mbe++ = address_hi;
-	  }
-	  prev_address = address;
-	}
-      }
-      k++;
-      space_left -= (mbe - b);      
-    }
-    //printf("%d %d\n",k,space_left);
-    load_tx_bytes();
-    if (space_left < 26*4) {
-      terminate_current_packet();
-    }
-    if (k < bus_count) {
-      memmove(&vals, &vals + k*32, (bus_count-k)*128); 
-    }
-    bus_count -= k;
   }
 } 

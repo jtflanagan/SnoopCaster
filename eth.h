@@ -10,8 +10,8 @@
 void eth_init();
 void eth_loop();
 
-void eth_read(uint32_t addr, uint8_t* buf, uint16_t len, bool blocking);
-void eth_write(uint32_t addr, uint8_t* buf, uint16_t len, bool blocking);
+void eth_read(uint32_t addr, uint8_t* buf, uint16_t len);
+void eth_write(uint32_t addr, uint8_t* buf, uint16_t len);
 uint16_t eth_read16(uint32_t reg);
 void eth_write16(uint32_t reg, uint16_t val);
 uint8_t eth_read8(uint32_t reg);
@@ -20,7 +20,6 @@ void eth_read_packet(uint8_t* buf, uint16_t len);
 void eth_write_packet(uint8_t* buf, uint16_t len);
 
 bool is_wizchip_busy();
-bool tx_ring_full();
 void process_rx();
 
 
