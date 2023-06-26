@@ -1,0 +1,87 @@
+.define public PHI0_GPIO 21
+
+; Apple II bus interface
+; Ref: Understanding the Apple II, pages 4-7, 7-8
+
+; Prerequisites:
+;  * Bus clock used is PHI0, wired to GPIO 22
+;  * JMP pin is mapped to RW signal
+;  * IN pins are mapped to USER1, PHI0, IOSEL, RW, and Data[7:0]
+;  * input shift left and autopush @ 11 bits (although for address pushes
+;    we actually push 19 bits, doing 8 and then 11 which gets us autopushed)
+;  * run at about 125MHz (8ns/instruction)
+
+; notes:
+; Address and RW signals from 65c02 are valid 140ns after P1
+; data write from 65c02 valid 75ns after P0
+; data read to 65c02 must be valid min 50ns before P1 and min 10ns after
+;
+; addr begins capture at P1+168ns, and is autopushed by P1+208
+; captured data (65c02 write or read) is captured and autopushes at P0+472ns
+; emitted writes need to be in the RXFIFO by P0+392ns, and hit the bus by
+;   P0+440ns, and held till P1+40ns
+; 26 instructions. This leaves 6 to spare for an alternate design which uses
+;   overclocking, which may need more NOP events to achieve the necessary
+;   wall-time delays.
+; after PHI0 is detected as low or high, the wall time is about 32ns after
+;   the actual clock transition: about 16ns propagation delay through the
+;   transceiver,  plus 2 cycles (8ns each) for the input synchronization 
+;   done on PHI0.  Each subseqent cycle is labeled with the wall time at the
+;   time that instruction starts.
+
+.program abus_core
+
+
+.wrap_target
+main_loop_begin:
+    wait 0 GPIO, PHI0_GPIO [1] ; wait for PHI0 to fall (P1 begin)
+; the extra cycle of wait is to give a little more hold time after P1 begin
+; if we should happen to have just completed an emitted read cycle.
+    set PINS, 0b0110 ; P1+40, enable addrhi transceiver
+    mov OSR, NULL ; P1+40
+    out PINDIRS, 8 [14]; P1+48, reset pins as input if needed
+    in PINS, 8 ; P1+168, read addrhi (8 bit shifted in), NOT autopushed
+    set PINS, 0b1010 [2]; P1+176, enable addrlo transceiver
+; This pull is done to clear out cruft from the TXFIFO if the bus core
+; delivered a byte late.  Which is bad of course, it means that the bus read
+; garbage instead of the correct value.  But what would be worse would be
+; seeing an unexpected byte in the FIFO on the next read cycle and trying to
+; push it out- that would cause a bus fight!  We locate the pull instruction
+; here because it's a place where we have slack latency to fill anyway, and
+; it is early enough in the bus cycle that we won't be inadvertently consuming
+; a legitimate byte emitted by the bus core- the bus core doesn't make the
+; decision to emit a read byte until we have delivered the address+control
+; bytes.  Which we are still putting together to provide!
+    pull noblock ; P1+200, clear out any possible TXFIFO cruft
+    in PINS, 11 ; p1+208, read addrlo and control pins, and autopush
+    wait 1 GPIO, PHI0_GPIO ; wait for PHI0 to rise (P0 begin)
+    jmp handle_read ; P0+32, jump pin is RW, read high
+; capture write
+    mov Y, Y [31] ; P0+40, NOP to delay the write capture
+    set PINS, 0b1100 ; P0+296, enable data read transceiver and more delay
+    in PINS, 11 ; P0+472, read data+control, autopush
+    jmp main_loop_begin ; p0+480
+
+handle_read:
+    mov Y, Y [31] ; P0+40, NOP to delay the check for TXFIFO
+    mov Y, Y [11] ; P0+296, NOP for more delay
+; if the bus core is choosing to emit a write on this cycle, the write must
+; be in the TXFIFO before this point, so that STATUS detects that the fifo
+; is not empty
+    mov X, STATUS ; P0+392, STATUS is whether TXFIFO is empty
+    jmp !X emit_read ; P0+400 ; X will be ~NULL (true) if fifo is empty
+; fifo is empty, we will capture the bus read
+    set PINS, 0b1100 [8] ; P0+400, enable data read transceiver
+    in PINS, 11 ; P0+472, read data+control, autopush
+    jmp main_loop_begin ; P0+480
+
+emit_read:
+; fifo is not empty, we will emit our byte on the bus
+    set PINS, 0b1101 ; enable data write transceiver
+    mov OSR, ~NULL ; P0+416
+    out PINDIRS, 8 ; P0+424, set data pins as outputs
+    pull noblock ; P0+432
+    out PINS, 8 ; P0+440
+; we do a dummy write here, so that every cycle has a P0 write
+    in PINS, 11 ; P0+448, read dontcare+control, autopush
+.wrap

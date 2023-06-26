@@ -35,13 +35,16 @@ add_compile_options(
 add_executable(snoopcaster)
 
 pico_generate_pio_header(snoopcaster
-    ${CMAKE_CURRENT_SOURCE_DIR}/abus.pio)
+    ${CMAKE_CURRENT_SOURCE_DIR}/abus_core.pio)
 
 target_sources(snoopcaster PUBLIC
-    main.c
-    abus.c
-    buffers.c
-    eth.c
+    #main.c
+    #abus.c
+    #buffers.c
+    #eth.c
+    spi_core.c
+    abus_core.c
+    busmain.c
 )
 target_include_directories(snoopcaster PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snoopcaster PUBLIC
