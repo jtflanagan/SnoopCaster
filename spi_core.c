@@ -16,14 +16,17 @@ static uint32_t spi_rx_msg_len;
 static uint32_t spi_rx_msg_recv;
 static uint8_t spi_rx_msg_buf[1024];
 static bool remote_ready = false;
+static bool spi_idle = true;
 
 void spi_core_init() {
   spi_init(ETH_PICO_SPI_PORT, 62500 * 1000);
   gpio_set_function(ETH_PICO_PIN_SCK, GPIO_FUNC_SPI);
   gpio_set_function(ETH_PICO_PIN_TX, GPIO_FUNC_SPI);
   gpio_set_function(ETH_PICO_PIN_RX, GPIO_FUNC_SPI);
+  // initialize READY pin for eth pico to pull low when it is ready
   gpio_init(ETH_PICO_PIN_READY);
   gpio_set_dir(ETH_PICO_PIN_READY, GPIO_IN);
+  gpio_set_pulls(ETH_PICO_PIN_READY, true, false);
   
   eth_dma_tx = dma_claim_unused_channel(true);
   eth_dma_rx = dma_claim_unused_channel(true);
@@ -59,11 +62,11 @@ static void process_rx_msg() {
 
 void spi_core_loop() {
   while (1) {
-    if (remote_ready && (bus_buffer_begin != bus_buffer_end)) {
+    if (spi_idle && remote_ready && (bus_buffer_begin != bus_buffer_end)) {
       spi_tx_buf = bus_buffer[bus_buffer_begin];
       ++bus_buffer_begin;
       dma_start_channel_mask((1u << eth_dma_tx) | (1u << eth_dma_rx));
-      dma_channel_wait_for_finish_blocking(eth_dma_tx);
+      spi_idle = false;
     }
     if (gpio_get(ETH_PICO_PIN_READY) == 1) {
       // if the remote is not ready, reset any rx state and discard
@@ -80,16 +83,25 @@ void spi_core_loop() {
       remote_ready = true;
       continue;
     }
-    if (spi_rx_msg_len) {
-      memcpy(spi_rx_msg_buf + spi_rx_msg_recv, (char*)spi_rx_buf, 4);
-      spi_rx_msg_recv += 4;
-      if (spi_rx_msg_recv >= spi_rx_msg_len) {
-	process_rx_msg();
+    if (spi_idle == false && !dma_channel_is_busy(eth_dma_tx)) {
+      spi_idle = true;
+      if (!remote_ready) {
+	// if the remote is just coming up, whatever is in spi_rx_buf
+	// is garbage, skip it and read again
+	remote_ready = true;
+	continue;
       }
-      spi_rx_msg_len = 0;
-      spi_rx_msg_recv = 0;
-    } else {
-      spi_rx_msg_len = spi_rx_buf;
+      if (spi_rx_msg_len) {
+	memcpy(spi_rx_msg_buf + spi_rx_msg_recv, (char*)spi_rx_buf, 4);
+	spi_rx_msg_recv += 4;
+	if (spi_rx_msg_recv >= spi_rx_msg_len) {
+	  process_rx_msg();
+	}
+	spi_rx_msg_len = 0;
+	spi_rx_msg_recv = 0;
+      } else {
+	spi_rx_msg_len = spi_rx_buf;
+      }
     }
   }
 }

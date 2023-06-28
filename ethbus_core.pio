@@ -1,0 +1,35 @@
+.define public ADDRHI_SEL 28
+.define public ADDRLO_SEL 27
+.define public DATA_SEL 26
+
+; Prerequisites:
+;  * We trigger our reads on the transceiver selects done by the other Pico.
+;  * IN pins are RW and Data[7:0]
+;  * input shift left and autopush @ 25 bits
+;  * run at about 125MHz
+
+; notes:
+; The data selected is stable by 32ns after the transceiver line is pulled.
+; There are 2 cycles of input sync delay (16ns) on our line reads,
+; and additionally the actual sample time relative to the other core's clock
+; could be between 0 and 8 ns after depending on relative clock phase.
+; Thus, it is not safe to sample until 2 cycles after we see the signal,
+; and when we do that, it might be as much as 40ns after the transceiver 
+; signal actually happens.  That places an imposition of minimal hold time 
+; on the bus core, where it has to hold the select even after it completes
+; its own sample, to give us time to do ours.  Furthermore, we have to have
+; enough time to begin our wait for the next select. The bus core gives 
+; at least 24ns (6 of its clocks, 3 of ours) of this additional minimum
+; hold time before it adjusts transceivers.
+
+.program ethbus_core
+
+
+.wrap_target
+    wait 0 GPIO, ADDRHI_SEL [1]
+    in PINS, 8 ; 2 sync cycles + 1 delay cycle + 1 instruction = 32ns
+    wait 0 GPIO, ADDRLO_SEL [1]
+    in PINS, 8
+    wait 0 GPIO, DATA_SEL [1] 
+    in PINS, 9 ; autopush addrhi, addrlo, RW, and data
+.wrap
